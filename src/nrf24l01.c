@@ -154,14 +154,25 @@ void _reg_write_byte (uint8_t reg, uint8_t val)
  * Read RX-payload width for the top R_RX_PAYLOAD in the RX FIFO.
  */
 static
-uint8_t _rx_payload_width_read (void)
+int _rx_payload_width_read (void)
 {
     uint8_t tx_buf[2], rx_buf[2];
 
-    tx_buf[0] = _CMD_WRITEREG | reg;            /* write register command */
+    tx_buf[0] = _CMD_R_RX_PL_WID;   /* read the top pipe payload width */
     tx_buf[1] = 0;
     nrf24l01_spi_exchange(tx_buf, rx_buf, 2);
     return rx_buf[1];
+}
+
+static
+int _pipe_read_rx_width (int pipe)
+{
+    uint8_t tx_buf[2], rx_buf[2];
+
+    tx_buf[0] = _CMD_READREG | (X_PW_P0 + pipe);
+    tx_buf[1] = 0;
+    nrf24l01_spi_exchange(tx_buf, rx_buf, 2);
+    return rx_buf[1] & _;
 }
 
 int nrf24l01_set_chan (uint8_t chan)
@@ -376,16 +387,9 @@ uint8_t _rx_fifo_read (uint8_t pipe, uint8_t *p_out_buf)
  * NRF Write TX FIFO
  */
 static
-void _tx_fifo_write (const uint8_t *p_in_buf)
+void _tx_fifo_write (const uint8_t *p_buf, uint8_t size)
 {
-    uint8_t command[33], bogus[33];
-    
-    /*
-     * Build command and send retrieve RX command to NRF24L01
-     */
-    command[0] = _CMD_TX_PAYLOAD;
-    memcpy(command + 1, p_in_buf, _FIFO_BYTES); //todo: dynamic length
-    nrf24l01_spi_exchange(command, bogus, _FIFO_BYTES);
+    nrf24l01_spi_tx_tx(_CMD_TX_PAYLOAD, p_buf, size);
 }
 
 /*
@@ -452,7 +456,7 @@ int nrf24l01_rx (uint32_t timeout, uint8_t *p_pipe_num, uint8_t *p_out_buf)
     /*
      * Retreive data from fifo
      */
-    _rx_fifo_read(p_out_buf);
+    _rx_fifo_read(*p_pipe_num, p_out_buf);
     
     /*
      * Bring CE down, in order to execute the read operation
@@ -471,30 +475,19 @@ int nrf24l01_rx (uint32_t timeout, uint8_t *p_pipe_num, uint8_t *p_out_buf)
     return 0;
 }
 
-/*
- * Function to send data
- * This functions blocks until data is available
- * The send output buffer needs to be _FIFO_BYTES(32) bytes wide
- */
 int nrf24l01_tx (const uint8_t *p_data, uint8_t size)
 {
-    /*
-     * Wait for binary semaphore NRFSemTX
-     */
-    chBSemWait(&_g_sem_tx);
+    if (size > _FIFO_BYTES) {
+        return -EINVAL;
+    }
+
+    chBSemWait(&_g_sem_tx);         /* Wait for binary semaphore NRFSemTX */
+    
+    nrf24l01_pin_ce_set(0);         /* Clear CE, ready for a positive pulse */
+    _tx_fifo_write(p_data, size);   /* Write the data to FIFO */
     
     /*
-     * Put CE low.
-     */
-    nrf24l01_pin_ce_set(0);
-    
-    /*
-     * Send the data to pipe 1 (the out pipe)
-     */
-    _tx_fifo_write(p_data);
-    
-    /*
-     * Toggle the CE Pad in order to send data packet
+     * CE positive pulse to send data packet
      */
     nrf24l01_pin_ce_set(1);
     nrf24l01_delay_us(10);
@@ -503,9 +496,6 @@ int nrf24l01_tx (const uint8_t *p_data, uint8_t size)
     return 0;
 }
 
-/*
- * Initialize the NRF24L01 chip
- */
 int nrf24l01_init (void)
 {
     /*
@@ -516,39 +506,47 @@ int nrf24l01_init (void)
     chBSemObjectInit(&_g_sem_tx,  FALSE); /* Semaphore initialized as free, because transmit channel is open */
     
     /*
-     * Set configuration registers
+     * Init CE
      */
-    _reg_write_byte(_REG_CONFIG, 0b00001110); /* POWER_UP, ENABLE CRC */
-    _reg_write_byte(_REG_EN_AA,  0b00000011); /* Enhanced ShockBurst on channel 0,1 */
-    _reg_write_byte(_REG_EN_RXADDR, 0b00000011); /* Enable data pipe 0,1 */
-    _reg_write_byte(_REG_SETUP_AW, 0b00000011); /* 5 bytes address width */
-    _reg_write_byte(_REG_SETUP_RETR, 0b00010011); /* Up to 3 Re-Transmit, Wait 500μS */
-    _reg_write_byte(_REG_RF_SETUP, 0b00000111); /* Sets up the channel we work on */
-    _reg_write_byte(_REG_STATUS, 0b01110000); /* Reset the IRQ registers. */
-//    _reg_write_byte(_REG_RX_PW_P0, _FIFO_BYTES); /* Pipe 0 FIFO holds 32 bytes. */
-//    _reg_write_byte(_REG_RX_PW_P1, _FIFO_BYTES); /* Pipe 1 FIFO holds 32 bytes. */
+    nrf24l01_pin_ce_out_pp_set();   /* CE pin push-pull */
+    nrf24l01_pin_ce_set(0);         /* Cli CE to keep idle mode */
 
+    /*
+     * Set configuration registers:
+     */
+    _reg_write_byte(_REG_CONFIG,     _CONFIG_PWR_UP | _CONFIG_EN_CRC);  /* power up; enable crc */
+    _reg_write_byte(_REG_SETUP_AW,   _SETUP_AW_5BYTES);                 /* address width 5 byte */
+
+    /*
+     * Reset the IRQ registers, write 1 to clear bit.
+     */
+    _reg_write_byte(_REG_STATUS, _STATUS_RX_DR | _STATUS_TX_DS | _STATUS_MAX_RT);
+
+    /*
+     * Config pipe 0 for rx
+     */
+    _reg_write_byte(_REG_EN_AA,      _ENAA_P0); /* Enhanced ShockBurst enable */
+    _reg_write_byte(_REG_EN_RXADDR,  _ERX_P0);  /* Pipe enable */
+    _reg_write_byte(_REG_RX_PW_P0,   0);        /* no payload */
+
+    /*
+     * Enhanced ShockBurst Config
+     */
+    _reg_write_byte(_REG_SETUP_RETR, (_SETUP_RETR_ARD & (1 << 4)) |
+                                     (_SETUP_RETR_ARC & (0x03)  )); /* Up to 3 Re-Transmit, Wait 500μS */
+    _reg_write_byte(_REG_RF_SETUP,   _RF_SETUP_LNA_HCURR   |
+                                     _RF_SETUP_RF_PWR_0DBM);
+    _reg_write_byte(_REG_DYNPD, _DYNPD_DPL_P1 | _DYNPD_DPL_P2 | _DYNPD_DPL_P3 |
+                                _DYNPD_DPL_P4 | _DYNPD_DPL_P5);
     _reg_write_byte(_REG_FEATURE, _FEATURE_EN_DPL);
-    _reg_write_byte(_REG_DYNPD, _DYNPD_DPL_P0 | _DYNPD_DPL_P1);
-    
     _activate_cmd();    /* enable "features", for Dynamic Layload Length */
 
     /*
-     * Setup the pads for the EC pin
+     * Start a thread for handle IRQ
      */
-    nrf24l01_pin_ce_out_pp_set();
-    
-    /*
-     * Set CE to high, to put NRF24L01 into Receive mode.
-     */
-    nrf24l01_pin_ce_set(1);
-    
-    //todo: read id to do test
-
-    _g_init_done_flg = TRUE;
-
     _start_thread();
-
+    
+    _g_init_done_flg = TRUE;
     return 0;
 }
 

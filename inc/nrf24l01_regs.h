@@ -1,5 +1,10 @@
 
 /*
+ * Macros
+ */
+#define _BIT(n)                          (1 << n)
+
+/*
  * NRF24L01 commands
  */
 #define _CMD_READREG                     0x00             /* 0b000A AAAA read register  A AAAA */
@@ -44,8 +49,6 @@
 #define _REG_FIFO_STATUS                 0x17             /* FIFO Status Register */
 #define _REG_DYNPD                       0x1C             /* Enable dynamic payload length */
 #define _REG_FEATURE                     0x1D             /* Feature Register */
-
-#define _BIT(n)                          (1 << n)
 
 /*
  * configuration register

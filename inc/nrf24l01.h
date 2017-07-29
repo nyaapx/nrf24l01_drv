@@ -43,11 +43,13 @@
 #ifndef NRF24L01_CFG_ADDR_LENGTH
 #define NRF24L01_CFG_ADDR_LENGTH            NRF24L01_CFG_ADDR_LENGTH_5BYTE
 #else
+
     #if ((NRF24L01_CFG_ADDR_LENGTH != NRF24L01_CFG_ADDR_LENGTH_3BYTE) &&    \
          (NRF24L01_CFG_ADDR_LENGTH != NRF24L01_CFG_ADDR_LENGTH_4BYTE) &&    \
          (NRF24L01_CFG_ADDR_LENGTH != NRF24L01_CFG_ADDR_LENGTH_5BYTE))
         #error "NRF24L01_CFG_ADDR_LENGTH error!"
     #endif
+
 #endif
 
 /*
@@ -60,7 +62,7 @@
 #define NRF24L01_CFG_DATA_RATE              NRF24L01_CFG_DATA_RATE_2MBPS
 #else
     #if ((NRF24L01_CFG_DATA_RATE != NRF24L01_CFG_DATA_RATE_1MBPS) &&        \
-         (NRF24L01_CFG_DATA_RATE != NRF24L01_CFG_DATA_RATE_2MBPS))          \
+         (NRF24L01_CFG_DATA_RATE != NRF24L01_CFG_DATA_RATE_2MBPS))
         #error "NRF24L01_CFG_DATA_RATE error!"
     #endif
 #endif
@@ -75,7 +77,7 @@
 #define NRF24L01_CFG_CRCO                   NRF24L01_CFG_CRCO_1BYTE
 #else
     #if ((NRF24L01_CFG_CRCO != NRF24L01_CFG_CRCO_1BYTE) &&        \
-         (NRF24L01_CFG_CRCO != NRF24L01_CFG_CRCO_2BYTE))          \
+         (NRF24L01_CFG_CRCO != NRF24L01_CFG_CRCO_2BYTE))
         #error "NRF24L01_CFG_CRCO error!"
     #endif
 #endif
@@ -163,6 +165,10 @@ extern "C"
  * @return  0 on success, negative error code on fail
  */
 int nrf24l01_init (void);
+
+//int nrf24l01_tx_cfg ();
+//
+//int nrf24l01_rx_cfg ();
 
 /**
  * @brief   Write and read a register to test whether the chip works
