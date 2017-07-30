@@ -87,7 +87,7 @@ void EXTInit(void)
     /*
      * Setup NRF24L01 IRQ pad.
      */
-    palSetPadMode(NRF24L01_PORT_CE_IRQ, NRF24L01_PIN_IRQ, PAL_MODE_INPUT);
+    palSetPadMode(_NRF_PORT_CE_IRQ, _NRF_PIN_IRQ, PAL_MODE_INPUT);
 
     /*
      * Setup interrupts using the structures above.

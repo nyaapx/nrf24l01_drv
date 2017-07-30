@@ -26,9 +26,7 @@
  */
 
 #include "nrf24l01.h"
-
-#include "nrf24l01_regs.h"
-#include "nrf24l01_cfg.h"
+#include "hal_nrf.h"
 
 #include "ch.h"
 #include "hal.h"
@@ -37,14 +35,11 @@
 #include <string.h>
 #include <stdbool.h>
 
-
 /*
  * The number of bytes the NRF24L01 RX FIFO is going to hold
  * This can be 32 bytes MAX
  */
 #define _FIFO_BYTES 32
-
-#define _BUF_SIZE   128
 
 /*
  * Binary semaphore, to lock access to the send and receive queue of the NRF24L01
@@ -66,219 +61,16 @@ static bool _g_init_done_flg;
 
 static void _start_thread (void);
 
-/*
- * Reverse buffer (Used to reverse addresses)
- */
-//static
-//void _reverse_buf (uint8_t in[], uint8_t out[], size_t size)
-//{
-//    size_t count=0;
-//
-//    for(count=0; count < size; count++) {
-//        out[count]=in[size-(count+1)];
-//    }
-//}
-
-static
-void _reg_read (uint8_t reg, uint8_t *p_buf, size_t size)
-{
-    uint8_t first_byte;
-
-    /*
-     * Build command to read register
-     */
-    first_byte = _CMD_READREG | reg;
-
-    nrf24l01_spi_tx_rx(first_byte, p_buf, size);
-}
-
-/*
- * ACTIVATE SPI command followed by data 0x73, enable/disable features:
- *  R_RX_PL_WID
- *  W_ACK_PAYLOAD
- *  W_TX_PAYLOAD_NOACK
- */
-static
-void _activate_cmd (void)
-{
-    uint8_t tx_buf[2], rx_buf[2];
-
-    tx_buf[0] = _CMD_ACTIVATE;     /* ACTIVATE command */
-    tx_buf[1] = 0x73;
-    nrf24l01_spi_exchange(tx_buf, rx_buf, 2);
-}
-
-/*
- * Read single byte of register
- */
-static
-uint8_t _reg_read_byte (uint8_t reg)
-{
-    uint8_t tx_buf[2], rx_buf[2];
-
-    /*
-     * exchange 2 bytes, the second byte is the value of specified register
-     */
-    tx_buf[0] = _CMD_READREG | reg;     /* read register command */
-    tx_buf[1] = 0;                      /* useless byte */
-    nrf24l01_spi_exchange(tx_buf, rx_buf, 2);
-    return rx_buf[1];
-}
-
-/*
- * Write several bytes to register
- */
-static
-void _reg_write (uint8_t reg, const uint8_t *p_val, uint8_t size)
-{
-    uint8_t first_byte;
-
-    first_byte = _CMD_WRITEREG | reg;           /* write register command */
-    nrf24l01_spi_tx_tx(first_byte, p_val, size);
-}
-
-/*
- * Write single byte to register
- */
-static
-void _reg_write_byte (uint8_t reg, uint8_t val)
-{
-    uint8_t tx_buf[2], rx_buf[2];
-
-    tx_buf[0] = _CMD_WRITEREG | reg;            /* write register command */
-    tx_buf[1] = val;
-    nrf24l01_spi_exchange(tx_buf, rx_buf, 2);
-}
-
-/*
- * Read RX-payload width for the top R_RX_PAYLOAD in the RX FIFO.
- */
-static
-int _rx_payload_width_read (void)
-{
-    uint8_t tx_buf[2], rx_buf[2];
-
-    tx_buf[0] = _CMD_R_RX_PL_WID;   /* read the top pipe payload width */
-    tx_buf[1] = 0;
-    nrf24l01_spi_exchange(tx_buf, rx_buf, 2);
-    return rx_buf[1];
-}
-
-static
-int _pipe_read_rx_width (int pipe)
-{
-    uint8_t tx_buf[2], rx_buf[2];
-
-    tx_buf[0] = _CMD_READREG | (X_PW_P0 + pipe);
-    tx_buf[1] = 0;
-    nrf24l01_spi_exchange(tx_buf, rx_buf, 2);
-    return rx_buf[1] & _;
-}
-
 int nrf24l01_set_chan (uint8_t chan)
 {
-    if ((chan & _RF_CH) != chan) {
-        return -EINVAL;
+    if (chan <= 0x7F) {
+        hal_nrf_set_rf_channel(chan);
+        return 0;
+    } else {
+        return -1;
     }
-    _reg_write_byte(_REG_RF_CH, chan);
 }
-
-/*
- * Set the address to the receiver pipe
- * Normaly pipe  is used to receive the ack packets by shockburst
- * Use pipe 1 as the first data receive pipe
- * @Arguments
- * pipe                Pipe number to set the address to
- * addr_size           The size of the address in bytes
- * addr                Byte array holding the addr, LSB first
- */
-static
-void _rx_addr_set (uint8_t pipe, uint8_t *p_addr, uint8_t addr_size)
-{
-    uint8_t pipeAddr;
-
-    /*
-     * Create command
-     */
-    pipeAddr = _CMD_WRITEREG | (_REG_RX_ADDR_P0 + pipe);
-
-    _reg_write(pipeAddr, p_addr, addr_size);
-}
-
-/*
- * Set the address to the receiver pipe
- * @Arguments
- * pipe                Pipe number to set the address to
- * addr_size    The size of the address in bytes
- * addr                Byte array holding the address, LSB first
- */
-void _tx_addr_set (uint8_t *p_addr, uint8_t addr_size)
-{
-    uint8_t pipeAddr;
     
-    /*
-     * Set pipe 0 address identical to send address,
-     * this to enable the automatic shockburst handling of ack's
-     */
-    pipeAddr = _CMD_WRITEREG | _REG_RX_ADDR_P0;
-    _reg_write(pipeAddr, p_addr, addr_size);
-    
-    /*
-     * Set the TX pipe address
-     */
-    pipeAddr = _CMD_WRITEREG | _REG_TX_ADDR;
-    _reg_write(pipeAddr, p_addr, addr_size);
-}
-
-/*
- * Get Status from inside interrupt routine
- */
-static
-uint8_t _status_get (void)
-{
-    uint8_t command[2], result[2];
-    
-    /*
-     * Set NOP and receive the STATUS register
-     */
-    command[0] = _CMD_NOP;
-    nrf24l01_spi_exchange(command, result, 2);
-    
-    return result[0];
-}
-
-/*
- * Reset status flags inside interrupt routine
- */
-static
-void _status_reset (uint8_t stat_mask)
-{
-    uint8_t command[2], result[2];
-    
-    /*
-     * Set NOP and receive the STATUS register
-     */
-    command[0] = _CMD_WRITEREG | _REG_STATUS;
-    command[1] = stat_mask;
-    nrf24l01_spi_exchange(command, result, 2);
-}
-
-/*
- * Flush the TX Queue
- */
-static
-void _flush_tx (void)
-{
-    uint8_t command;
-    uint8_t result;
-    
-    /*
-     * Set NOP and receive the STATUS register
-     */
-    command = _CMD_FLUSH_TX;
-    nrf24l01_spi_exchange(&command, &result, 1);
-}
-
 /*
  * Handle the IRQ signal, unlock the Semaphores or set flags. 
  */
@@ -353,66 +145,7 @@ void _irq_handler (void)
     _status_reset(reset_flags);
 }
 
-void nrf24l01_report_irq (void)
-{
-    if (_g_init_done_flg) {
-        chBSemSignalI(&_g_sem_irq);     /* Unlock the IRQ Semaphore */
-    }
-}
 
-/*
- * NRF read RX FIFO, p_out_buf 32 bytes
- * return the size of data
- */
-static
-uint8_t _rx_fifo_read (uint8_t pipe, uint8_t *p_out_buf)
-{
-    uint8_t command, len;
-    
-    /*
-     * Read the rx fifo payload wide of specified pipe
-     */
-    len = //todo: 动态
-
-    /*
-     * Build command and send retreive RX command to NRF24L01
-     */
-    command = _CMD_RX_PAYLOAD;
-    nrf24l01_spi_tx_rx(command, p_out_buf, len);
-
-    return len;
-}
-
-/*
- * NRF Write TX FIFO
- */
-static
-void _tx_fifo_write (const uint8_t *p_buf, uint8_t size)
-{
-    nrf24l01_spi_tx_tx(_CMD_TX_PAYLOAD, p_buf, size);
-}
-
-/*
- * NRF RX FIFO empty
- * Returns FALSE if full, TRUE if empty
- */
-static
-bool _rx_fifo_empty (void)
-{
-    uint8_t command = 0, result = 0;
-    
-    /*
-     * Build command to read status register
-     */
-    command = _CMD_READREG | _REG_FIFO_STATUS;
-    nrf24l01_spi_exchange(&command, &result, 1);
-    
-    if ((result & _FIFO_STATUS_RX_EMPTY) != 0) {
-        return TRUE; /* FIFO empty */
-    } else {
-        return FALSE;
-    }
-}
 
 /*
  * Function to receive data from FIFO
@@ -496,7 +229,7 @@ int nrf24l01_tx (const uint8_t *p_data, uint8_t size)
     return 0;
 }
 
-int nrf24l01_init (void)
+int nrf24l01_init (nrf24l01_init_cfg_t *p_init_cfg)
 {
     /*
      * Initialize the FIFO semaphores 
@@ -555,6 +288,11 @@ int nrf24l01_test (void)
     uint8_t old_val, new_val;
 
     /*
+     * IO Test
+     */
+    //todo:
+
+    /*
      * Operate the register 0x05(RF_CH, RF Channel) to do the test.
      * 1. read, save its value to 'old_val'
      * 2. write, set a new value
@@ -585,6 +323,13 @@ int nrf24l01_test (void)
     }
 
     return 0;
+}
+
+void nrf24l01_report_irq (void)
+{
+    if (_g_init_done_flg) {
+        chBSemSignalI(&_g_sem_irq);     /* Unlock the IRQ Semaphore */
+    }
 }
 
 /* Driver Thread -------------------------------------------------------------*/

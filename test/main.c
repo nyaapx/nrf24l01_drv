@@ -41,18 +41,14 @@
 void abort(void){while(1==1){}}
 
 /*
- * Toggle LED 2
- */
-static void ledtoggle2(void){
-      palTogglePad(IOPORT2, GPIOB_LED2);
-}
-
-
-
-/*
  * Application entry point.
  */
-int main(void) {
+int main(void)
+{
+    const nrf24l01_init_cfg_t cfg = {
+        NRF24L01_MODE_PRX,
+        NRF24L01_DATA_RATE_1MBPS
+    };
 
     /*
      * System initializations.
@@ -68,29 +64,36 @@ int main(void) {
      * Initialize peripherals
      */
     EXTInit();
-    SPIInit();
+    spi1_plfm_init();
+
+    printf("\r\nNRF24L01 Test Startup");
 
     /*
      * Device initialization
      */
-    NRFInit();
+    nrf24l01_init(&cfg);
 
     /*
-     * Starting threads
+     * Execute Test
      */
-    startThreads();
-
-
-    /*
-     * Normal main() thread activity, in this demo it does nothing.
-     */
-    while (TRUE) {
-        /*
-         * Run NRF24L01 test
-         */
-        NRFtest();
+    if (0 == nrf24l01_test()) {
+        printf("\r\nTest OK.");
+    } else {
+        printf("\r\nTest Failed.");
+        while(1);
     }
 
-    // return 0;
+    /*
+     * todo:
+     */
+    nrf24l01_pipe_cfg();
+
+    while (TRUE) {
+        palTogglePad(IOPORT2, GPIOB_LED2);
+
+        //todo:
+    }
+
+    return 0;
 }
 
